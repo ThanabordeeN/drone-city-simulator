@@ -16,6 +16,52 @@ Automation ───┘                          │
 
 ---
 
+## AI Control Module (Spec: AI Control)
+
+Browser-only module (`src/agent/`) that lets an AI agent drive the drone
+through the same public automation API a human uses:
+
+```text
+Human command  ->  CommandParser  ->  AgentController  ->  provider
+                                                        (OpenRouter / JEV  or  local reflex)
+                                                        ->  validateAction
+                                                        ->  window.__DRONE_SIM__.act()
+```
+
+- **Tab UI** — `[ SIMULATOR ] [ AI CONTROL ]`. The Three.js world keeps
+  rendering no matter which tab is open; switching back to SIMULATOR stops the
+  agent and returns control to keyboard/gamepad.
+- **API key** — typed into a `type="password"` field, kept in a single runtime
+  variable. Never written to `localStorage` / `sessionStorage` / cookies /
+  URLs, and gone after a reload.
+- **Decision loop** — `observe()` -> provider -> `validateAction()` -> `act()`
+  at 5 Hz while the simulation keeps running at 60 Hz in real time. No
+  `pause()`/`step()` is ever used by the agent.
+- **Safety** — 2 s action watchdog clears held input, STOP aborts the in-flight
+  request, provider failures clear input and fail the session, `goalReached`
+  completes the session, and response/session IDs guard against stale
+  decisions.
+- **Destination commands** ("`บินไปที่ x=400 y=50 z=-250`") are parsed and fed
+  to `sim.setGoal()`; the agent then navigates on `goalDirection` /
+  `goalDistance` / sensors. Survival and circle commands run without a goal.
+- **Local reflex provider** — a built-in offline policy (Model: `local-reflex`)
+  that needs no API key, useful for demos and tests.
+
+### Quick start (AI Control)
+
+```bash
+npm run dev
+```
+
+1. Open the app and click **AI CONTROL**.
+2. Provider = OpenRouter, paste **your OpenRouter API key** (memory only).
+3. Model, e.g. `jev/typesafe` (or pick `Local reflex (no API key)`).
+4. Type a command, e.g. `บินไปที่ x=400 y=50 z=-250 โดยห้ามชนตึก`, press **RUN**.
+5. Watch the drone fly in real time; **STOP** at any point (input is cleared
+   and manual control resumes).
+
+---
+
 ## Live deployments
 
 | Target | URL | Notes |

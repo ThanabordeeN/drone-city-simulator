@@ -13,6 +13,8 @@
  *   ?debug=1             open the debug panel on load
  *   ?control=automation  start with human input disabled
  */
+import { AgentController } from './agent/AgentController';
+import { AIControlPanel } from './agent/AIControlPanel';
 import { AutomationAPI, installAutomationAPI } from './automation/AutomationAPI';
 import { AutomationInput } from './input/AutomationInput';
 import { GamepadInput, type GamepadProfile } from './input/GamepadInput';
@@ -178,6 +180,11 @@ async function bootstrap(): Promise<void> {
     ready,
   });
   installAutomationAPI(api);
+
+  // ---- AI Control Module (browser-only feature; simulation core untouched) --
+  const agentController = new AgentController({ sim: api });
+  const aiPanel = new AIControlPanel({ controller: agentController, sim: api });
+  void aiPanel;
 
   // ---- Frame loop -------------------------------------------------------
   let lastFrameAt = performance.now();
