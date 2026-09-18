@@ -15,6 +15,7 @@
  */
 import type {
   AgentTask,
+  CommandConstraints,
   DroneAction,
   DroneObservation,
   JevAdapter,
@@ -43,37 +44,57 @@ export const JEV_QUESTIONS = {
   pitch: {
     type: 'score' as const,
     instructions:
-      'Should the drone pitch forward (move toward its nose direction, world -Z) or backward this cycle, given its speed, the goal and the obstacle sensors?',
+      'Should the drone pitch forward (move toward its nose direction, world -Z) or backward this cycle? Slow down or back off when derived.obstacleMargin or derived.timeToObstacleS is small, and restore positive altitudeMargin first.',
     criteria: ['pitch backward hard', 'pitch backward', 'hold pitch', 'pitch forward', 'pitch forward hard'],
-  },
-  strafe: {
-    type: 'score' as const,
-    instructions:
-      'Should the drone strafe right (X+) or left (X-) this cycle, considering obstacle sensors on each side?',
-    criteria: ['strafe left hard', 'strafe left', 'hold strafe', 'strafe right', 'strafe right hard'],
   },
   yaw: {
     type: 'score' as const,
     instructions:
-      'Should the drone turn left (+yaw) or right (-yaw) this cycle? Pick the turn that best aligns with the goal direction while avoiding obstacles.',
+      'Should the drone turn left (+yaw) or right (-yaw) this cycle? Pick the turn that best aligns with the goal direction while keeping derived.obstacleMargin positive.',
     criteria: ['turn right hard', 'turn right', 'hold heading', 'turn left', 'turn left hard'],
   },
   vertical: {
     type: 'score' as const,
     instructions:
-      'Should the drone ascend or descend this cycle? Keep above the ground sensor and steer toward the goal altitude.',
+      'Should the drone ascend or descend this cycle? Keep derived.altitudeMargin positive (never drop below constraints.minAltitude), keep the down sensor above 10 m, and steer toward the goal altitude.',
     criteria: ['descend hard', 'descend', 'hold altitude', 'ascend', 'ascend hard'],
+  },
+  strafe: {
+    type: 'score' as const,
+    instructions:
+      'Should the drone strafe right (X+) or left (X-) this cycle? Keep derived.obstacleMargin positive (constraints.minObstacleDistance from any building).',
+    criteria: ['strafe left hard', 'strafe left', 'hold strafe', 'strafe right', 'strafe right hard'],
   },
   brake: {
     type: 'noul' as const,
     instructions:
-      'Should the drone brake to a hover now? Answer yes when the goal is reached or a crash is imminent.',
+      'Should the drone brake to a hover now? Answer yes when the goal is reached, when derived.timeToObstacleS is under ~1.5 s, or when survival demands a stop.',
     criteria: {
       true: 'Brake now: goal reached, obstacle extremely close, or survival demands a stop',
       false: 'Keep flying under control',
     },
   },
 };
+
+/** Survival margins, pre-computed so JEV can answer "which way is safe". */
+function deriveMargins(
+  constraints: CommandConstraints,
+  observation: DroneObservation,
+): NonNullable<JevDecisionRequest['state']['derived']> {
+  const minObs = constraints.minObstacleDistance;
+  const lateral = [observation.sensors.front, observation.sensors.left, observation.sensors.right].filter(
+    (v): v is number => v !== null,
+  );
+  const closest = lateral.length > 0 ? Math.min(...lateral) : null;
+
+  return {
+    altitudeMargin:
+      constraints.minAltitude === undefined ? null : round(observation.altitude - constraints.minAltitude),
+    obstacleMargin: closest === null ? null : round(closest - (minObs ?? 0)),
+    timeToObstacleS: closest === null || observation.speed < 0.5 ? null : round(closest / observation.speed),
+    verticalSpeed: round(observation.velocity[1]),
+  };
+}
 
 /**
  * The Decisions API request body: the drone state (object) plus typed
@@ -106,6 +127,22 @@ export interface JevDecisionRequest {
       collision: boolean;
       crashed: boolean;
       grounded: boolean;
+    };
+    /** Safety rules from the human command, verbatim numbers. */
+    constraints?: CommandConstraints;
+    /**
+     * Pre-computed survival margins (negative = constraint VIOLATED):
+     * the model only has to pick the answer that restores a positive margin.
+     */
+    derived?: {
+      /** altitude - minAltitude (null when unconstrained). */
+      altitudeMargin: number | null;
+      /** closest lateral sensor reading - minObstacleDistance. */
+      obstacleMargin: number | null;
+      /** seconds until the closest lateral obstacle at current speed. */
+      timeToObstacleS: number | null;
+      /** vertical velocity, m/s. */
+      verticalSpeed: number;
     };
     nearbyBuildings?: { id: string; position: { x: number; y: number; z: number }; distance: number }[];
   };
@@ -150,6 +187,12 @@ export class DefaultJevAdapter implements JevAdapter {
           crashed: observation.crashed,
           grounded: observation.grounded,
         },
+        ...(task.constraints
+          ? {
+              constraints: task.constraints,
+              derived: deriveMargins(task.constraints, observation),
+            }
+          : {}),
         ...(context && context.length > 0
           ? {
               nearbyBuildings: context.slice(0, 8).map((building) => ({

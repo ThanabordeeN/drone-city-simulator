@@ -59,11 +59,22 @@ export interface DroneObservation {
   goalReached: boolean;
 }
 
+/** Safety constraints parsed from the human command (min altitude etc.). */
+export interface CommandConstraints {
+  /** Never fly below this altitude, in metres. */
+  minAltitude?: number;
+  /** Never fly above this altitude, in metres. */
+  maxAltitude?: number;
+  /** Keep at least this many metres from any obstacle. */
+  minObstacleDistance?: number;
+}
+
 /** Human command kept alive for the whole agent session (Spec §10). */
 export interface AgentTask {
   command: string;
   startedAt: number;
   goal?: { x: number; y: number; z: number; radius?: number };
+  constraints?: CommandConstraints;
 }
 
 /** Optional world context attached to a decision request (Spec §44). */
@@ -78,6 +89,8 @@ export interface AgentDecisionRequest {
   task: { command: string };
   state: DroneObservation;
   nearbyBuildings?: NearbyBuildingContext[];
+  /** Safety constraints parsed from the command (survival rules). */
+  constraints?: CommandConstraints;
   sessionId: string;
 }
 

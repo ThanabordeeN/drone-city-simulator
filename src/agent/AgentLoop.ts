@@ -156,6 +156,7 @@ export async function runAgentLoop(deps: AgentLoopDeps): Promise<LoopOutcome> {
               task: { command: task.command },
               state: observation,
               nearbyBuildings: sim.getNearbyBuildings?.(60),
+              constraints: task.constraints,
               sessionId: deps.sessionId,
             },
             { signal },

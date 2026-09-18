@@ -8,7 +8,7 @@
  *
  * Pure string → data mapping: no DOM, no simulation access.
  */
-import type { AgentTask } from './AgentProtocol';
+import type { AgentTask, CommandConstraints } from './AgentProtocol';
 
 export type CommandKind = 'destination' | 'altitude' | 'freeform';
 
@@ -19,6 +19,8 @@ export interface ParsedCommand {
   goal?: { x: number; y: number; z: number };
   /** Metres above the ground for "บินขึ้นไปสูง 50 เมตร". */
   altitudeTarget?: number;
+  /** Safety rules parsed from the command ("do not fly lower than 10 m"...). */
+  constraints?: CommandConstraints;
   /** Loose intent hints used in the agent prompt (demo scenarios §49–§51). */
   hints: {
     circle: boolean;
@@ -37,8 +39,36 @@ function matchNumber(text: string, pattern: RegExp): number | null {
   return Number.isFinite(value) ? value : null;
 }
 
+/** Extract survival constraints like "do not fly lower than 10 m". */
+export function parseConstraints(text: string): CommandConstraints {
+  const constraints: CommandConstraints = {};
+
+  // "do not fly lower than 10 m" / "not below 10" / "ห้ามต่ำกว่า 10 เมตร"
+  const minAlt = matchNumber(text, new RegExp(`(?:lower than|below|under|ต่ำกว่า|ต่ำลงกว่า)\\s*${NUMBER}\\s*(?:m\\b|เมตร|metres?|meters?)?`, 'i'));
+  if (minAlt !== null) constraints.minAltitude = Math.max(0, minAlt);
+
+  // "fly above 50 m" → min; "do not fly higher than 80 m" → max.
+  // The negation before "higher than/above" flips the meaning.
+  const above = text.match(new RegExp(`(?:higher than|above|สูงกว่า)\\s*(\\d+(?:\\.\\d+)?)\\s*(?:m\\b|เมตร|metres?)?`, 'i'));
+  if (above) {
+    const prefix = text.slice(Math.max(0, (above.index ?? 0) - 20), above.index);
+    const negated = /(?:not|never|don't|ห้าม|ไม่)\s*(?:fly|go|บิน)?\s*(?:higher than|above|สูงกว่า)?\s*$/i.test(prefix) || /(?:not|never|ห้าม|ไม่)[^\d.]*$/i.test(prefix);
+    if (negated) constraints.maxAltitude = Number(above[1]);
+    else if (minAlt === null) constraints.minAltitude = Number(above[1]);
+  }
+
+  // "do not come closer than 3 m to a building" / "not within 3 m" / "ห้ามเข้าใกล้ตึก 3 เมตร"
+  const minObs =
+    matchNumber(text, new RegExp(`(?:closer than|nearer than|within)\\s*[^\\d-]{0,12}(\\d+(?:\\.\\d+)?)\\s*(?:m\\b|เมตร)?`, 'i')) ??
+    matchNumber(text, new RegExp(`(?:close to|เข้าใกล้|ใกล้กว่า|ใกล้กับ)[^\\d-]{0,24}?(\\d+(?:\\.\\d+)?)\\s*(?:m\\b|เมตร)?`, 'i'));
+  if (minObs !== null && minObs > 0) constraints.minObstacleDistance = Math.min(50, minObs);
+
+  return Object.keys(constraints).length > 0 ? constraints : {};
+}
+
 export function parseCommand(raw: string): ParsedCommand {
   const text = raw.trim();
+  const constraints = parseConstraints(text);
   const hints = {
     circle: /วงกลม|ก้ำ|circle|orbit|loop/i.test(text),
     forward: /ข้างหน้า|เดินหน้า|ไปข้าง|forward|straight ahead/i.test(text),
@@ -56,6 +86,7 @@ export function parseCommand(raw: string): ParsedCommand {
       kind: 'destination',
       goal: { x, y: y ?? 40, z },
       hints,
+      ...(Object.keys(constraints).length > 0 ? { constraints } : {}),
     };
   }
 
@@ -69,6 +100,7 @@ export function parseCommand(raw: string): ParsedCommand {
       kind: 'destination',
       goal: { x: Number(triplet[1]), y: Number(triplet[2]), z: Number(triplet[3]) },
       hints,
+      ...(Object.keys(constraints).length > 0 ? { constraints } : {}),
     };
   }
 
@@ -80,6 +112,7 @@ export function parseCommand(raw: string): ParsedCommand {
       kind: 'destination',
       goal: { x: Number(bare[1]), y: Number(bare[2]), z: Number(bare[3]) },
       hints,
+      ...(Object.keys(constraints).length > 0 ? { constraints } : {}),
     };
   }
 
@@ -93,10 +126,16 @@ export function parseCommand(raw: string): ParsedCommand {
       kind: 'altitude',
       altitudeTarget: Math.max(2, altitude),
       hints,
+      ...(Object.keys(constraints).length > 0 ? { constraints } : {}),
     };
   }
 
-  return { raw: text, kind: 'freeform', hints };
+  return {
+    raw: text,
+    kind: 'freeform',
+    hints,
+    ...(Object.keys(constraints).length > 0 ? { constraints } : {}),
+  };
 }
 
 /** Build the immutable task object handed to the agent loop (Spec §10). */
@@ -105,5 +144,6 @@ export function createTask(parsed: ParsedCommand, startedAt: number): AgentTask 
     command: parsed.raw,
     startedAt,
     ...(parsed.goal ? { goal: parsed.goal } : {}),
+    ...(parsed.constraints ? { constraints: parsed.constraints } : {}),
   };
 }

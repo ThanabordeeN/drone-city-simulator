@@ -6,7 +6,7 @@
  * exactly like the rest of the simulation core.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { validateAction } from '../../src/agent/AgentProtocol';
+import { validateAction, type DroneObservation } from '../../src/agent/AgentProtocol';
 import { parseCommand } from '../../src/agent/CommandParser';
 import { ChatActionAdapter, DefaultJevAdapter } from '../../src/agent/JevAdapter';
 import { OpenRouterClient, ProviderError, OPENROUTER_CHAT_URL, OPENROUTER_DECISIONS_URL } from '../../src/agent/OpenRouterClient';
@@ -36,6 +36,25 @@ describe('CommandParser (Spec §9, §22)', () => {
     const parsed = parseCommand('บินขึ้นไปสูง 50 เมตร');
     expect(parsed.kind).toBe('altitude');
     expect(parsed.altitudeTarget).toBe(50);
+  });
+
+  it('extracts safety constraints from English commands', () => {
+    const parsed = parseCommand(
+      'fly straight without crash to the building and do not fly lower than 10 m and do not close to building more than 3 m',
+    );
+    expect(parsed.kind).toBe('freeform');
+    expect(parsed.constraints ?? {}).toEqual({ minAltitude: 10, minObstacleDistance: 3 });
+  });
+
+  it('extracts safety constraints from Thai commands', () => {
+    const parsed = parseCommand('บินไปข้างหน้า ห้ามบินต่ำกว่า 15 เมตร และห้ามเข้าใกล้ตึกน้อยกว่า 5 เมตร');
+    expect(parsed.constraints ?? {}).toEqual({ minAltitude: 15, minObstacleDistance: 5 });
+  });
+
+  it('reads "not higher than" as a max altitude, not a minimum', () => {
+    const parsed = parseCommand('fly forward, do not fly higher than 80 m');
+    expect(parsed.constraints ?? {}).toEqual({ maxAltitude: 80 });
+    expect(parsed.constraints?.minAltitude).toBeUndefined();
   });
 
   it('classifies survival and circle commands as freeform with hints', () => {
@@ -93,6 +112,34 @@ describe('DefaultJevAdapter (Spec §20 — Decisions API)', () => {
     expect(questions.strafe.criteria).toHaveLength(5);
     expect(questions.yaw.criteria).toHaveLength(5);
     expect(questions.vertical.criteria).toHaveLength(5);
+  });
+
+  it('carries command constraints and pre-computed margins in the state', () => {
+    const observation = {
+      ...makeObservation(),
+      altitude: 12,
+      speed: 15,
+    } as unknown as DroneObservation;
+    observation.velocity[1] = -2;
+    observation.sensors.front = 8;
+    const request = adapter.createRequest(
+      {
+        command: 'fly straight, not lower than 10 m, not closer than 3 m',
+        startedAt: 0,
+        constraints: { minAltitude: 10, minObstacleDistance: 3 },
+      },
+      observation,
+    ) as unknown as { state: { constraints: Record<string, unknown>; derived: Record<string, unknown> } };
+
+    expect(request.state.constraints).toEqual({ minAltitude: 10, minObstacleDistance: 3 });
+    // altitude 12 vs min 10 → +2; closest lateral 8 vs min 3 → +5;
+    // 8 m at 15 m/s → 0.53 s to impact — the model must act now.
+    expect(request.state.derived).toEqual({
+      altitudeMargin: 2,
+      obstacleMargin: 5,
+      timeToObstacleS: 0.5,
+      verticalSpeed: -2,
+    });
   });
 
   it('maps score answers into stick values (0→-1, middle→0, 4→+1)', () => {
