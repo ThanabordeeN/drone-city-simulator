@@ -1,0 +1,24 @@
+node_modules/
+dist/
+dist-ssr/
+
+# Local tooling caches (workspace-local because the sandbox denies ~/.cache)
+.npm-cache/
+.playwright-browsers/
+.playwright-deps/
+.screenshots/
+
+# Test artefacts
+test-results/
+playwright-report/
+coverage/
+
+*.local
+.DS_Store
+
+# Local production preview
+.preview/
+
+# cloudflared HOME used for quick tunnels
+.cloudflared-home/
+.npmcache/

@@ -1,0 +1,30 @@
+{
+  "name": "drone-city-simulator",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Web-based 3D Drone City Simulator with an automation/observation API for AI agents and browser tests.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --port 4173 --strictPort",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run",
+    "test:e2e": "playwright test",
+    "test:all": "vitest run && playwright test",
+    "verify:render": "node scripts/verify-render.mjs",
+    "screenshots": "node scripts/screenshot.mjs"
+  },
+  "dependencies": {
+    "three": "^0.186.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.56.0",
+    "@types/node": "^26.6.1",
+    "@types/three": "^0.186.0",
+    "typescript": "^5.9.0",
+    "vite": "^7.1.0",
+    "vitest": "^3.2.0"
+  }
+}
