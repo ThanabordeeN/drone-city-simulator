@@ -10,7 +10,7 @@ import type { AgentStatus, DroneObservation } from './AgentProtocol';
 import type { AgentActivity } from './AgentState';
 import { AgentStateStore, type AgentRuntimeState } from './AgentState';
 import { createTask, parseCommand } from './CommandParser';
-import { DefaultJevAdapter } from './JevAdapter';
+import { ChatActionAdapter, DefaultJevAdapter } from './JevAdapter';
 import { OpenRouterClient, ProviderError } from './OpenRouterClient';
 import { ReflexPolicy } from './ReflexPolicy';
 import {
@@ -46,6 +46,8 @@ export interface AgentControllerOptions {
   jevAdapter?: DefaultJevAdapter;
   /** Debug hook (Spec §45): receives the raw provider response. */
   onRawResponse?: (response: unknown) => void;
+  /** Injectable fetch for tests (defaults to global fetch). */
+  fetchImpl?: typeof fetch;
 }
 
 export class AgentController {
@@ -53,6 +55,8 @@ export class AgentController {
   private readonly sim: ControllerSimSurface;
   private readonly loopConfig: AgentLoopConfig;
   private readonly adapter: DefaultJevAdapter;
+  private readonly chatAdapter = new ChatActionAdapter();
+  private readonly fetchImpl: typeof fetch | undefined;
   private onRawResponse: ((response: unknown) => void) | undefined;
 
   private sessionId: string | null = null;
@@ -64,6 +68,7 @@ export class AgentController {
     this.sim = options.sim;
     this.adapter = options.jevAdapter ?? new DefaultJevAdapter();
     this.onRawResponse = options.onRawResponse;
+    this.fetchImpl = options.fetchImpl;
     this.loopConfig = { ...DEFAULT_LOOP_CONFIG, ...(options.loopConfig ?? {}) };
   }
 
@@ -253,11 +258,16 @@ export class AgentController {
     if (!options.apiKey || options.apiKey.trim() === '') {
       throw new ProviderError('OpenRouter API key is required');
     }
+    // JEV models speak the Decisions API (typed questions); everything else
+    // uses the OpenAI-compatible chat completions endpoint.
+    const isJev = /typesafe\/jev/i.test(options.model);
     return new OpenRouterClient({
       apiKey: options.apiKey,
       model: options.model,
-      adapter: this.adapter,
+      adapter: isJev ? this.adapter : this.chatAdapter,
+      endpoint: isJev ? 'decisions' : 'chat',
       ...(this.onRawResponse ? { onRawResponse: this.onRawResponse } : {}),
+      ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}),
     });
   }
 }

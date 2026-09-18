@@ -9,7 +9,10 @@
  */
 import type { AIProvider, AgentDecisionRequest, DroneAction, JevAdapter } from './AgentProtocol';
 
-const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
+/** OpenAI-compatible chat endpoint (generic chat models). */
+export const OPENROUTER_CHAT_URL = 'https://openrouter.ai/api/v1/chat/completions';
+/** Decisions endpoint — JEV answers typed questions about a state. */
+export const OPENROUTER_DECISIONS_URL = 'https://openrouter.ai/api/alpha/decisions';
 
 export class ProviderError extends Error {
   readonly status?: number;
@@ -30,6 +33,10 @@ export interface OpenRouterClientOptions {
   fetchImpl?: typeof fetch;
   /** Debug hook: raw provider response, before schema parsing (Spec §45). */
   onRawResponse?: (response: unknown) => void;
+  /** Which OpenRouter endpoint this transport talks to. */
+  endpoint?: 'chat' | 'decisions';
+  /** Optional site URL for OpenRouter leaderboards (Quick Start header). */
+  siteUrl?: string;
 }
 
 interface ChatMessage {
@@ -49,6 +56,8 @@ export class OpenRouterClient implements AIProvider {
   private readonly timeoutMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly onRawResponse: ((response: unknown) => void) | undefined;
+  private readonly endpoint: 'chat' | 'decisions';
+  private readonly siteUrl: string | undefined;
   private inFlight: AbortController | null = null;
 
   constructor(options: OpenRouterClientOptions) {
@@ -61,6 +70,8 @@ export class OpenRouterClient implements AIProvider {
     this.timeoutMs = options.timeoutMs ?? 25_000;
     this.fetchImpl = options.fetchImpl ?? ((...args) => fetch(...args));
     this.onRawResponse = options.onRawResponse;
+    this.endpoint = options.endpoint ?? 'chat';
+    this.siteUrl = options.siteUrl;
   }
 
   /** Abort the request currently in flight, if any (Spec §39). */
@@ -72,11 +83,23 @@ export class OpenRouterClient implements AIProvider {
     request: AgentDecisionRequest,
     options: { signal?: AbortSignal } = {},
   ): Promise<DroneAction> {
+    const isDecisions = this.endpoint === 'decisions';
     const partial = this.adapter.createRequest(
       { command: request.task.command, startedAt: 0 },
       request.state,
       request.nearbyBuildings,
-    ) as { messages?: ChatMessage[]; temperature?: number; max_tokens?: number };
+    ) as { messages?: ChatMessage[]; temperature?: number; max_tokens?: number; state?: unknown; questions?: unknown };
+
+    const body: Record<string, unknown> = { model: this.model };
+    if (isDecisions) {
+      // Decisions API: the adapter supplies `state` + typed `questions`.
+      body.state = partial.state;
+      body.questions = partial.questions;
+    } else {
+      if (partial.messages) body.messages = partial.messages;
+      if (partial.temperature !== undefined) body.temperature = partial.temperature;
+      if (partial.max_tokens !== undefined) body.max_tokens = partial.max_tokens;
+    }
 
     const controller = new AbortController();
     this.inFlight = controller;
@@ -85,19 +108,15 @@ export class OpenRouterClient implements AIProvider {
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
 
     try {
-      const response = await this.fetchImpl(OPENROUTER_URL, {
+      const response = await this.fetchImpl(isDecisions ? OPENROUTER_DECISIONS_URL : OPENROUTER_CHAT_URL, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
           'Content-Type': 'application/json',
           'X-Title': 'Drone City Simulator',
+          ...(this.siteUrl ? { 'HTTP-Referer': this.siteUrl } : {}),
         },
-        body: JSON.stringify({
-          model: this.model,
-          ...(partial.messages ? { messages: partial.messages } : {}),
-          ...(partial.temperature !== undefined ? { temperature: partial.temperature } : {}),
-          ...(partial.max_tokens !== undefined ? { max_tokens: partial.max_tokens } : {}),
-        }),
+        body: JSON.stringify(body),
         signal: controller.signal,
       });
 

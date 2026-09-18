@@ -8,8 +8,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { validateAction } from '../../src/agent/AgentProtocol';
 import { parseCommand } from '../../src/agent/CommandParser';
-import { DefaultJevAdapter } from '../../src/agent/JevAdapter';
-import { OpenRouterClient, ProviderError } from '../../src/agent/OpenRouterClient';
+import { ChatActionAdapter, DefaultJevAdapter } from '../../src/agent/JevAdapter';
+import { OpenRouterClient, ProviderError, OPENROUTER_CHAT_URL, OPENROUTER_DECISIONS_URL } from '../../src/agent/OpenRouterClient';
 import { AgentController } from '../../src/agent/AgentController';
 import { createHarness } from './helpers';
 
@@ -73,8 +73,66 @@ describe('validateAction (Spec §14)', () => {
   });
 });
 
-describe('DefaultJevAdapter (Spec §20)', () => {
+describe('DefaultJevAdapter (Spec §20 — Decisions API)', () => {
   const adapter = new DefaultJevAdapter();
+
+  it('builds a Decisions request: state + typed questions', () => {
+    const request = adapter.createRequest(
+      { command: 'บินไปข้างหน้าเรื่อย ๆ ห้ามชนและห้ามตก', startedAt: 0 },
+      makeObservation(),
+      [{ id: 'b1', position: { x: 1, y: 2, z: 3 }, distance: 9 }],
+    ) as { state: Record<string, unknown>; questions: Record<string, unknown> };
+
+    expect(request.state.task).toBe('บินไปข้างหน้าเรื่อย ๆ ห้ามชนและห้ามตก');
+    expect(request.state.nearbyBuildings).toHaveLength(1);
+    // Every continuous axis uses a 5-point ordered rubric (-1 .. +1).
+    const questions = request.questions as Record<string, { type: string; criteria: unknown[] }>;
+    expect(questions.pitch.type).toBe('score');
+    expect(questions.brake.type).toBe('noul');
+    expect(questions.pitch.criteria).toHaveLength(5);
+    expect(questions.strafe.criteria).toHaveLength(5);
+    expect(questions.yaw.criteria).toHaveLength(5);
+    expect(questions.vertical.criteria).toHaveLength(5);
+  });
+
+  it('maps score answers into stick values (0→-1, middle→0, 4→+1)', () => {
+    const response = {
+      answers: {
+        pitch: { score: 4 },
+        strafe: { score: 0 },
+        yaw: { score: 2 },
+        vertical: { score: 3 },
+        brake: { noul: 0.1 },
+      },
+    };
+    expect(adapter.parseResponse(response)).toEqual({
+      pitch: 1, roll: -1, yaw: 0, vertical: 0.5, brake: false,
+    });
+  });
+
+  it('uses the expected position of a full distribution for smoother control', () => {
+    const response = {
+      answers: {
+        // P([0,1,2,3,4]) = [0, 0, 0.5, 0.5, 0] → expected position 2.5 → 0.25
+        pitch: { score: 2, probabilities: [0, 0, 0.5, 0.5, 0] },
+        strafe: { score: 2 },
+        yaw: { score: 2 },
+        vertical: { score: 2 },
+        brake: { noul: 0.9 },
+      },
+    };
+    const action = adapter.parseResponse(response);
+    expect(action.pitch).toBeCloseTo(0.25, 5);
+    expect(action.brake).toBe(true);
+  });
+
+  it('throws when answers are missing', () => {
+    expect(() => adapter.parseResponse({ nothing: true })).toThrow();
+  });
+});
+
+describe('ChatActionAdapter (generic chat models)', () => {
+  const adapter = new ChatActionAdapter();
 
   it('builds a chat request from task + observation', () => {
     const request = adapter.createRequest(
@@ -90,16 +148,14 @@ describe('DefaultJevAdapter (Spec §20)', () => {
     expect(userPayload.nearbyBuildings).toHaveLength(1);
   });
 
-  it('parses clean JSON responses', () => {
-    const response = { choices: [{ message: { content: '{"action":{"pitch":0.5,"roll":0,"yaw":-0.2,"vertical":0.1,"brake":false}}' } }] };
-    expect(adapter.parseResponse(response)).toEqual({ pitch: 0.5, roll: 0, yaw: -0.2, vertical: 0.1, brake: false });
-  });
+  it('parses clean / fenced JSON responses and clamps out-of-range values', () => {
+    const clean = { choices: [{ message: { content: '{"action":{"pitch":0.5,"roll":0,"yaw":-0.2,"vertical":0.1,"brake":false}}' } }] };
+    expect(adapter.parseResponse(clean)).toEqual({ pitch: 0.5, roll: 0, yaw: -0.2, vertical: 0.1, brake: false });
 
-  it('parses fenced / prose-wrapped responses and clamps out-of-range values', () => {
-    const response = {
+    const fenced = {
       choices: [{ message: { content: 'Sure!\n```json\n{"action":{"pitch":7,"roll":0,"yaw":0,"vertical":0,"brake":false}}\n```' } }],
     };
-    expect(adapter.parseResponse(response).pitch).toBe(1);
+    expect(adapter.parseResponse(fenced).pitch).toBe(1);
   });
 
   it('throws on responses without an action', () => {
@@ -107,32 +163,39 @@ describe('DefaultJevAdapter (Spec §20)', () => {
   });
 });
 
-describe('OpenRouterClient (Spec §19, §37, §39)', () => {
-  const adapter = new DefaultJevAdapter();
+describe('OpenRouterClient (Spec §19, §37, §39) — chat endpoint', () => {
+  const chatAdapter = new ChatActionAdapter();
 
-  function stubFetch(handler: (url: string, init: RequestInit) => Promise<Response>): OpenRouterClient {
+  function stubFetch(
+    handler: (url: string, init: RequestInit) => Promise<Response>,
+    overrides: Partial<ConstructorParameters<typeof OpenRouterClient>[0]> = {},
+  ): OpenRouterClient {
     return new OpenRouterClient({
       apiKey: 'sk-test',
-      model: 'jev/typesafe',
-      adapter,
+      model: 'openai/gpt-4o-mini',
+      adapter: chatAdapter,
       fetchImpl: handler as unknown as typeof fetch,
+      ...overrides,
     });
   }
 
   it('requires an API key', () => {
-    expect(() => new OpenRouterClient({ apiKey: '  ', model: 'm', adapter })).toThrow(ProviderError);
+    expect(() => new OpenRouterClient({ apiKey: '  ', model: 'm', adapter: chatAdapter })).toThrow(ProviderError);
   });
 
   it('sends the key + model and returns a validated action', async () => {
+    let capturedUrl = '';
     let captured: RequestInit | undefined;
-    const client = stubFetch(async (_url, init) => {
+    const client = stubFetch(async (url, init) => {
+      capturedUrl = url;
       captured = init;
       return new Response(JSON.stringify({ choices: [{ message: { content: '{"action":{"pitch":2,"roll":0,"yaw":0,"vertical":0,"brake":false}}' } }] }), { status: 200 });
     });
     const action = await client.decide({ task: { command: 'go' }, state: makeObservation(), sessionId: 's1' });
     expect(action.pitch).toBe(1); // clamped
+    expect(capturedUrl).toBe(OPENROUTER_CHAT_URL);
     const body = JSON.parse(String(captured?.body)) as { model: string };
-    expect(body.model).toBe('jev/typesafe');
+    expect(body.model).toBe('openai/gpt-4o-mini');
     expect((captured?.headers as Record<string, string>).Authorization).toBe('Bearer sk-test');
   });
 
@@ -144,18 +207,69 @@ describe('OpenRouterClient (Spec §19, §37, §39)', () => {
   });
 
   it('maps network failures to ProviderError', async () => {
-    const client = new OpenRouterClient({
-      apiKey: 'k', model: 'm', adapter,
-      fetchImpl: (async () => { throw new TypeError('network down'); }) as unknown as typeof fetch,
-    });
+    const client = stubFetch(async () => { throw new TypeError('network down'); });
     await expect(
       client.decide({ task: { command: 'x' }, state: makeObservation(), sessionId: 's' }),
     ).rejects.toThrow(ProviderError);
   });
 });
 
+describe('OpenRouterClient — JEV Decisions endpoint (typesafe/jev-1.13)', () => {
+  const jevAdapter = new DefaultJevAdapter();
+
+  function decisionsClient(
+    handler: (url: string, init: RequestInit) => Promise<Response>,
+  ): OpenRouterClient {
+    return new OpenRouterClient({
+      apiKey: 'sk-test',
+      model: 'typesafe/jev-1.13',
+      adapter: jevAdapter,
+      endpoint: 'decisions',
+      fetchImpl: handler as unknown as typeof fetch,
+    });
+  }
+
+  it('POSTs state + typed questions to the Decisions API and maps the answers', async () => {
+    let capturedUrl = '';
+    let captured: RequestInit | undefined;
+    const client = decisionsClient(async (url, init) => {
+      capturedUrl = url;
+      captured = init;
+      return new Response(JSON.stringify({
+        answers: {
+          pitch: { score: 4, probabilities: [0, 0, 0, 0, 1] },
+          strafe: { score: 2 },
+          yaw: { score: 2 },
+          vertical: { score: 2 },
+          brake: { noul: 0.05 },
+        },
+      }), { status: 200 });
+    });
+
+    const action = await client.decide({ task: { command: 'go' }, state: makeObservation(), sessionId: 's1' });
+    expect(capturedUrl).toBe(OPENROUTER_DECISIONS_URL);
+
+    const body = JSON.parse(String(captured?.body)) as { model: string; state: unknown; questions: unknown };
+    expect(body.model).toBe('typesafe/jev-1.13');
+    expect(body.state).toBeTruthy();
+    expect((body.questions as Record<string, unknown>).pitch).toBeTruthy();
+
+    expect(action.pitch).toBe(1);
+    expect(action.brake).toBe(false);
+  });
+
+  it('rejects 4xx responses like the chat endpoint', async () => {
+    const client = decisionsClient(async () => new Response('unauthorized', { status: 401 }));
+    await expect(
+      client.decide({ task: { command: 'x' }, state: makeObservation(), sessionId: 's' }),
+    ).rejects.toThrow(/invalid API key/);
+  });
+});
+
 describe('AgentController + AgentLoop with the real simulation (Spec §16-§18, §23, §34-§35, §37-§38)', () => {
-  function createAgentHarness(options: { intervalMs?: number; actionTimeoutMs?: number } = {}) {
+  function createAgentHarness(
+    options: { intervalMs?: number; actionTimeoutMs?: number; fetchImpl?: typeof fetch } = {},
+  ) {
     const { sim, api } = createHarness({ seed: 1 });
     api.markReady(); // the browser does this on the first rendered frame
     const controller = new AgentController({
@@ -165,6 +279,8 @@ describe('AgentController + AgentLoop with the real simulation (Spec §16-§18, 
         actionTimeoutMs: options.actionTimeoutMs ?? 400,
         maxDurationMs: 30_000,
       },
+      // Never hit the real network from a unit test.
+      fetchImpl: options.fetchImpl ?? (async () => { throw new TypeError('no network in unit tests'); }),
     });
     // Drive the fixed-timestep core exactly like the browser frame loop would.
     const driver = setInterval(() => sim.step(3), 5);

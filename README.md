@@ -23,7 +23,7 @@ through the same public automation API a human uses:
 
 ```text
 Human command  ->  CommandParser  ->  AgentController  ->  provider
-                                                        (OpenRouter / JEV  or  local reflex)
+                                                        (JEV Decisions API  /  chat completions  /  local reflex)
                                                         ->  validateAction
                                                         ->  window.__DRONE_SIM__.act()
 ```
@@ -37,6 +37,17 @@ Human command  ->  CommandParser  ->  AgentController  ->  provider
 - **Decision loop** — `observe()` -> provider -> `validateAction()` -> `act()`
   at 5 Hz while the simulation keeps running at 60 Hz in real time. No
   `pause()`/`step()` is ever used by the agent.
+- **JEV Decisions API** — the default model `typesafe/jev-1.13` does not
+  generate text. Each cycle the module POSTs the drone state plus typed
+  questions to `POST https://openrouter.ai/api/alpha/decisions`:
+
+    pitch / strafe / yaw / vertical -> score (5-point ordered rubric -> [-1, +1])
+    brake                           -> noul (brake when yes-probability > 0.7)
+
+  When the model returns the full `probabilities` distribution, the expected
+  rubric position is used for smoother control. Generic chat models
+  (`openai/gpt-4o-mini`, ...) go through the OpenAI-compatible chat endpoint
+  instead and are asked for a single strict-JSON action.
 - **Safety** — 2 s action watchdog clears held input, STOP aborts the in-flight
   request, provider failures clear input and fail the session, `goalReached`
   completes the session, and response/session IDs guard against stale
@@ -55,7 +66,7 @@ npm run dev
 
 1. Open the app and click **AI CONTROL**.
 2. Provider = OpenRouter, paste **your OpenRouter API key** (memory only).
-3. Model, e.g. `jev/typesafe` (or pick `Local reflex (no API key)`).
+3. Model: `typesafe/jev-1.13` (Decisions API) — or pick `Local reflex (no API key)` to try it for free.
 4. Type a command, e.g. `บินไปที่ x=400 y=50 z=-250 โดยห้ามชนตึก`, press **RUN**.
 5. Watch the drone fly in real time; **STOP** at any point (input is cleared
    and manual control resumes).

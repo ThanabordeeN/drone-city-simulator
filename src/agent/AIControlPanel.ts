@@ -21,8 +21,8 @@ export interface AIControlPanelOptions {
   };
 }
 
-const DEFAULT_MODEL = 'jev/typesafe';
-const MODEL_SUGGESTIONS = ['jev/typesafe', 'openai/gpt-4o-mini', 'anthropic/claude-3.5-haiku', 'meta-llama/llama-3.1-8b-instruct'];
+const DEFAULT_MODEL = 'typesafe/jev-1.13';
+const MODEL_SUGGESTIONS = ['typesafe/jev-1.13', 'openai/gpt-4o-mini', 'anthropic/claude-3.5-haiku', 'meta-llama/llama-3.1-8b-instruct'];
 
 const STYLE_ID = 'agent-panel-styles';
 
