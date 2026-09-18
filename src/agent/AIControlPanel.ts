@@ -158,6 +158,8 @@ export class AIControlPanel {
         <div class="agent-panel__rowline"><span class="agent-panel__key">Agent</span><span class="agent-panel__val"><span data-role="dot" class="agent-panel__dot"></span><span data-role="status">IDLE</span></span></div>
         <div class="agent-panel__rowline"><span class="agent-panel__key">Step</span><span class="agent-panel__val" data-role="step">0</span></div>
         <div class="agent-panel__rowline"><span class="agent-panel__key">Control mode</span><span class="agent-panel__val" data-role="mode">manual</span></div>
+        <div class="agent-panel__rowline"><span class="agent-panel__key">Crash recoveries</span><span class="agent-panel__val" data-role="recover">0</span></div>
+        <label class="agent-panel__checkboxline"><input type="checkbox" data-role="autorecover" checked /> Auto-recover after crash</label>
         <div data-role="error" class="agent-panel__error"></div>
       </div>
       <div class="agent-panel__section">
@@ -281,6 +283,12 @@ export class AIControlPanel {
       void this.controller.stop().catch((error: unknown) => this.showError(String(error)));
     });
 
+    const autoRecoverBox = query<HTMLInputElement>('autorecover');
+    autoRecoverBox.checked = true; // default ON
+    autoRecoverBox.addEventListener('change', () => {
+      this.controller.setAutoRecover(autoRecoverBox.checked);
+    });
+
     // ---- Debug toggles (Spec §45) -------------------------------------------
     for (const checkbox of Array.from(this.panel.querySelectorAll<HTMLInputElement>('input[data-debug]'))) {
       this.debugToggles.push(checkbox);
@@ -323,6 +331,7 @@ export class AIControlPanel {
     if (dot) dot.className = `agent-panel__dot ${dotClass(runtime.status)}`;
 
     this.set('step', String(runtime.step));
+    this.set('recover', String(runtime.recoveries));
     this.set('gdist', runtime.goalDistance === null ? '-' : `${runtime.goalDistance.toFixed(1)} m`);
     this.set('requests', String(activity.requests));
     this.set('latency', activity.lastLatencyMs === null ? '-' : `${Math.round(activity.lastLatencyMs)} ms`);

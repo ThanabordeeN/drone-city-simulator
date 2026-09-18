@@ -15,6 +15,8 @@ export interface AgentRuntimeState {
   lastAction: DroneAction | null;
   goalDistance: number | null;
   error: string | null;
+  /** Crash auto-recoveries used this session. */
+  recoveries: number;
 }
 
 export interface AgentActivity {
@@ -35,6 +37,7 @@ export const INITIAL_RUNTIME_STATE: AgentRuntimeState = {
   lastAction: null,
   goalDistance: null,
   error: null,
+  recoveries: 0,
 };
 
 export const INITIAL_ACTIVITY: AgentActivity = {

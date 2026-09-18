@@ -268,7 +268,12 @@ describe('OpenRouterClient — JEV Decisions endpoint (typesafe/jev-1.13)', () =
 
 describe('AgentController + AgentLoop with the real simulation (Spec §16-§18, §23, §34-§35, §37-§38)', () => {
   function createAgentHarness(
-    options: { intervalMs?: number; actionTimeoutMs?: number; fetchImpl?: typeof fetch } = {},
+    options: {
+      intervalMs?: number;
+      actionTimeoutMs?: number;
+      fetchImpl?: typeof fetch;
+      autoRecover?: boolean;
+    } = {},
   ) {
     const { sim, api } = createHarness({ seed: 1 });
     api.markReady(); // the browser does this on the first rendered frame
@@ -281,6 +286,7 @@ describe('AgentController + AgentLoop with the real simulation (Spec §16-§18, 
       },
       // Never hit the real network from a unit test.
       fetchImpl: options.fetchImpl ?? (async () => { throw new TypeError('no network in unit tests'); }),
+      ...(options.autoRecover !== undefined ? { autoRecover: options.autoRecover } : {}),
     });
     // Drive the fixed-timestep core exactly like the browser frame loop would.
     const driver = setInterval(() => sim.step(3), 5);
@@ -381,6 +387,76 @@ describe('AgentController + AgentLoop with the real simulation (Spec §16-§18, 
     expect(harness.controller.currentStatus).toBe('idle');
     harness.stopDriving();
   });
+
+describe('Crash auto-recovery (Spec §37 variant: survival)', () => {
+  it('resets to spawn on crash and keeps the session running when enabled', async () => {
+    const harness = createAgentHarness({ autoRecover: true });
+    const finished = harness.controller.start({
+      command: 'บินไปข้างหน้าเรื่อย ๆ ห้ามชน',
+      model: 'local-reflex',
+      provider: 'reflex',
+    });
+    await vi.waitFor(() => expect(harness.controller.currentStatus).toBe('running'), { timeout: 5_000 });
+
+    // Simulate a crash exactly like a building impact would.
+    harness.sim.state.crashed = true;
+
+    await vi.waitFor(() => {
+      const runtime = harness.controller.getRuntime();
+      expect(runtime.recoveries).toBeGreaterThanOrEqual(1);
+      expect(runtime.status).toBe('running'); // recovered, not failed
+    }, { timeout: 5_000 });
+
+    // The reset dropped the drone back at the spawn point, alive again.
+    expect(harness.sim.state.crashed).toBe(false);
+    const spawn = harness.sim.getSpawnPosition();
+    const position = harness.sim.getState().position;
+    expect(Math.hypot(position.x - spawn.x, position.z - spawn.z)).toBeLessThan(2);
+
+    await harness.controller.stop();
+    await finished;
+    harness.stopDriving();
+  }, 20_000);
+
+  it('fails the session on crash when auto-recovery is disabled', async () => {
+    const harness = createAgentHarness({ autoRecover: false });
+    const finished = harness.controller.start({
+      command: 'บินไปข้างหน้าเรื่อย ๆ ห้ามชน',
+      model: 'local-reflex',
+      provider: 'reflex',
+    });
+    await vi.waitFor(() => expect(harness.controller.currentStatus).toBe('running'), { timeout: 5_000 });
+
+    harness.sim.state.crashed = true;
+
+    await finished;
+    harness.stopDriving();
+    expect(harness.controller.currentStatus).toBe('failed');
+    expect(harness.controller.getRuntime().error).toMatch(/crashed/);
+  }, 20_000);
+
+  it('re-sets the destination goal after a recovery', async () => {
+    const harness = createAgentHarness({ autoRecover: true });
+    const finished = harness.controller.start({
+      command: 'fly to x=60 y=40 z=-60',
+      model: 'local-reflex',
+      provider: 'reflex',
+    });
+    await vi.waitFor(() => expect(harness.controller.currentStatus).toBe('running'), { timeout: 5_000 });
+
+    harness.sim.state.crashed = true;
+    await vi.waitFor(() => {
+      expect(harness.controller.getRuntime().recoveries).toBeGreaterThanOrEqual(1);
+    }, { timeout: 5_000 });
+
+    // reset() cleared the goal; the controller must restore it.
+    expect(harness.sim.getGoal()).toEqual({ x: 60, y: 40, z: -60, radius: 5 });
+
+    await harness.controller.stop();
+    await finished;
+    harness.stopDriving();
+  }, 20_000);
+});
 });
 
 function makeObservation() {

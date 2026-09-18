@@ -52,6 +52,12 @@ Human command  ->  CommandParser  ->  AgentController  ->  provider
   request, provider failures clear input and fail the session, `goalReached`
   completes the session, and response/session IDs guard against stale
   decisions.
+- **Crash auto-recovery** — a crash normally leaves the drone dead (the
+  simulation ignores all input until a reset). By default the agent then
+  `reset()`s to the spawn point and keeps flying (up to 3 recoveries per
+  session, re-`setGoal` included), so a survival run doesn't dead-end. Toggle
+  "Auto-recover after crash" in the panel; with it off the session fails on
+  crash like before.
 - **Destination commands** ("`บินไปที่ x=400 y=50 z=-250`") are parsed and fed
   to `sim.setGoal()`; the agent then navigates on `goalDirection` /
   `goalDistance` / sensors. Survival and circle commands run without a goal.

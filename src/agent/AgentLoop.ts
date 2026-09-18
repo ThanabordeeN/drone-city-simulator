@@ -26,6 +26,8 @@ export interface DroneSimSurface {
   observe(): DroneObservation;
   act(action: Partial<DroneAction>): void;
   clearInput(): void;
+  /** Full reset back to the spawn point (used by crash auto-recovery). */
+  reset?(): void;
   /** Optional world context for the agent request (Spec §43–§44). */
   getNearbyBuildings?(radius?: number): BuildingContext[];
 }
@@ -37,12 +39,18 @@ export interface AgentLoopConfig {
   actionTimeoutMs: number;
   /** Give up the session after this long even without a goal (default 5 min). */
   maxDurationMs: number;
+  /** On crash: reset to spawn and keep flying instead of failing (default true). */
+  autoRecover: boolean;
+  /** Max crash recoveries per session before the session fails (default 3). */
+  maxRecoveries: number;
 }
 
 export const DEFAULT_LOOP_CONFIG: AgentLoopConfig = {
   intervalMs: 200,
   actionTimeoutMs: 2000,
   maxDurationMs: 300_000,
+  autoRecover: true,
+  maxRecoveries: 3,
 };
 
 export interface AgentLoopHooks {
@@ -50,6 +58,8 @@ export interface AgentLoopHooks {
   onAction(action: DroneAction, latencyMs: number): void;
   onStall(): void;
   onError(message: string): void;
+  /** Called after the drone was reset following a crash. */
+  onRecover(recoveries: number): void;
 }
 
 export type LoopOutcome =
@@ -85,6 +95,7 @@ export async function runAgentLoop(deps: AgentLoopDeps): Promise<LoopOutcome> {
   let lastActionAt = Date.now();
   let stalled = false;
   let requestCount = 0;
+  let recoveries = 0;
 
   const watchdog = setInterval(() => {
     if (Date.now() - lastActionAt > config.actionTimeoutMs) {
@@ -108,9 +119,17 @@ export async function runAgentLoop(deps: AgentLoopDeps): Promise<LoopOutcome> {
       const observation = sim.observe();
       hooks.onObservation(observation);
 
-      // Hard survival stop: crashed drones get their input cleared.
+      // Crash handling: auto-recover (reset to spawn, keep the task) or fail.
       if (observation.crashed) {
         sim.clearInput();
+        if (config.autoRecover && recoveries < config.maxRecoveries && sim.reset) {
+          recoveries += 1;
+          sim.reset();
+          hooks.onRecover(recoveries);
+          await sleep(config.intervalMs, signal);
+          if (signal.aborted) return { reason: 'stopped' };
+          continue;
+        }
         return { reason: 'failed', error: 'drone crashed' };
       }
 

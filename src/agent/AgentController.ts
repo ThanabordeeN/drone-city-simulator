@@ -43,6 +43,10 @@ export interface ControllerSimSurface extends DroneSimSurface {
 export interface AgentControllerOptions {
   sim: ControllerSimSurface;
   loopConfig?: Partial<AgentLoopConfig>;
+  /** On crash: reset to spawn and keep flying (default true). */
+  autoRecover?: boolean;
+  /** Max crash recoveries per session (default 3). */
+  maxRecoveries?: number;
   jevAdapter?: DefaultJevAdapter;
   /** Debug hook (Spec §45): receives the raw provider response. */
   onRawResponse?: (response: unknown) => void;
@@ -69,7 +73,12 @@ export class AgentController {
     this.adapter = options.jevAdapter ?? new DefaultJevAdapter();
     this.onRawResponse = options.onRawResponse;
     this.fetchImpl = options.fetchImpl;
-    this.loopConfig = { ...DEFAULT_LOOP_CONFIG, ...(options.loopConfig ?? {}) };
+    this.loopConfig = {
+      ...DEFAULT_LOOP_CONFIG,
+      ...(options.autoRecover !== undefined ? { autoRecover: options.autoRecover } : {}),
+      ...(options.maxRecoveries !== undefined ? { maxRecoveries: options.maxRecoveries } : {}),
+      ...(options.loopConfig ?? {}),
+    };
   }
 
   getRuntime(): AgentRuntimeState {
@@ -86,6 +95,11 @@ export class AgentController {
 
   get isRunning(): boolean {
     return this.running;
+  }
+
+  /** Toggle crash auto-recovery (wired to the panel checkbox). */
+  setAutoRecover(enabled: boolean): void {
+    this.loopConfig.autoRecover = enabled;
   }
 
   /** Debug hook (Spec §45): observe the raw provider response, if any. */
@@ -196,6 +210,12 @@ export class AgentController {
         },
         onError: (message): void => {
           this.store.patchRuntime({ error: message });
+        },
+        onRecover: (recoveries: number): void => {
+          this.store.patchRuntime({ recoveries });
+          // reset() clears the simulator goal — restore it so destination
+          // tasks keep navigating after recovery.
+          if (task.goal) this.sim.setGoal(task.goal);
         },
       },
     });
