@@ -16,6 +16,41 @@ Automation ───┘                          │
 
 ---
 
+## Live deployments
+
+| Target | URL | Notes |
+|---|---|---|
+| **GitHub Pages** | https://thanabordeen.github.io/drone-city-simulator/ | Permanent. Redeploys on every push to `main` via `.github/workflows/deploy-pages.yml` (typecheck → unit tests → build → deploy). |
+| **cloudflared quick tunnel** | see the terminal | Ephemeral, no uptime guarantee. Tied to the local process; the hostname changes on every run. |
+
+### Re-expose locally with cloudflared
+
+The build uses relative asset paths (`base: './'`), so the same `dist/` works at a
+domain root, under a sub-path, and behind a tunnel.
+
+```bash
+npm run build
+
+npm run serve     # terminal 1: vite preview on 127.0.0.1:4173
+npm run tunnel    # terminal 2: cloudflared -> prints https://<random>.trycloudflare.com
+```
+
+`server.allowedHosts` / `preview.allowedHosts` allow `.trycloudflare.com` so the
+tunnel's `Host` header is accepted. Add your own domain there if you use a named
+tunnel.
+
+### Deploy to GitHub Pages yourself
+
+```bash
+gh repo create <name> --public --source=. --remote=origin --push
+gh api -X POST repos/<owner>/<name>/pages -f build_type=workflow
+```
+
+Push to `main` and the workflow publishes the site. Because the repo is a project
+site it is served from `/<name>/`, which the relative asset base handles.
+
+---
+
 ## Quick start
 
 ```bash
